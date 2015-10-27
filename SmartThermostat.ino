@@ -4,7 +4,7 @@
 #define DS3231_I2C_ADDRESS 0x68
 
 // set the greatest temp drop (in fahrenheit)
-#define MAX_TEMP_DROP 1
+#define MAX_TEMP_DROP 10
 // set the max internal temp of the rig (in celsius)
 #define MAX_INTERNAL_TEMP 70.0
 #define MIN_MILLIS_STATE_CHANGE 5000
@@ -29,6 +29,10 @@ void setup() {
   pinMode(dp_blink, OUTPUT);
   digitalWrite(dp_blink, LOW);
   Wire.begin();
+  //If attempting to use an arduino UBS serial interface to read serial monitor,
+  // set the serial monitor rate to half that of the pro mini's rate below.
+  // The arduino USB2Serial runs on a 16Mhz clock, whereas the pro mini runs
+  // at 8Mhz (3.3V model)
   Serial.begin(9600);
   while(!Serial);
   millis_last_state_change = millis() - 10000;
@@ -42,8 +46,8 @@ void loop() {
 
   if(RTC_temp > MAX_INTERNAL_TEMP){
     // thermal shutoff, turn off the SSR and delay 60 seconds. 
-    // digitalWrite(dp_SSR, LOW);
-    delay(1000);
+    digitalWrite(dp_SSR, LOW);
+    delay(60000);
   }
   if(in_time_window(&time_delta_temp)){
     can_state_change = ( (unsigned int) (millis() - millis_last_state_change) > MIN_MILLIS_STATE_CHANGE);
