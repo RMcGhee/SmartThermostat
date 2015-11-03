@@ -3,12 +3,15 @@
 #include <Wire.h>
 #define DS3231_I2C_ADDRESS 0x68
 #define TMP36_BASE 50
+#define MIN_MIN_STATE_CHANGE_ON 5
+#define MIN_MIN_STATE_CHANGE_OFF 15
+#define START_HOUR_OFFSET 18
+#define END_HOUR_OFFSET 5
 
 // set the greatest temp drop (in fahrenheit)
 #define MAX_TEMP_DROP 10
 // set the max internal temp of the rig (in celsius)
 #define MAX_INTERNAL_TEMP 70.0
-#define MIN_MILLIS_STATE_CHANGE 60000
 #define SMOOTH_FACTOR 4
 
 //for Arduino Pro Mini
@@ -22,18 +25,18 @@ int ap_temp = 6;
 int dp_blink = 13;
 int dp_relay = 10;
 int state_dp_relay = 0;
-unsigned long millis_last_state_change;
+struct ts t_now, t_changed_state;
 
 void setup() {
   // put your setup code here, to run once:
   pinMode(dp_blink, OUTPUT);
   pinMode(dp_relay, OUTPUT);
   digitalWrite(dp_blink, LOW);
-  Wire.begin();
-  //Serial.begin(9600);
-  //while(!Serial);
-  millis_last_state_change = millis()-50000;
-
+//  Wire.begin();
+//  Serial.begin(9600);
+//  while(!Serial);
+  read_DS3231_time(&t_changed_state);
+  add_minutes(&t_changed_state, -MIN_MIN_STATE_CHANGE_OFF);
 }
 
 void loop() {
@@ -42,44 +45,56 @@ void loop() {
   static float time_delta_temp = 0.0;
   static boolean can_state_change = true;
   static int temp_range = 20;
+  
   RTC_temp = DS3231_get_treg();
+  read_DS3231_time(&t_now);
 
   if(RTC_temp > MAX_INTERNAL_TEMP){
-    // thermal shutoff, turn off the relay and delay 60 seconds. 
+    // thermal shutoff, turn off the relay and delay 180 seconds. 
     digitalWrite(dp_relay, LOW);
-    delay(60000);
+    delay(180000);
   }
   if(in_time_window(minutes_difference)){
-    time_delta_temp = get_temp_drop(minutes_difference);
-    can_state_change = ( (unsigned int) (millis() - millis_last_state_change) > MIN_MILLIS_STATE_CHANGE);
-
     pot_read += (analogRead(ap_temp_pot) - pot_read)/SMOOTH_FACTOR;
     env_temp_f = get_env_temp_f((boolean) state_dp_relay);
     set_temp = base_temp + ((float) (pot_read/1023.0) * temp_range);
 
+    time_delta_temp = get_temp_drop(minutes_difference);
     set_temp -= time_delta_temp;
 
-    //turn on conditions
+    // Modify can_state_change when relay on and off
+    if(state_dp_relay && 
+      (min_diff(t_now, t_changed_state) >= MIN_MIN_STATE_CHANGE_ON)){
+      can_state_change = true;
+    }else if(!state_dp_relay && 
+      (min_diff(t_now, t_changed_state) >= MIN_MIN_STATE_CHANGE_OFF)){
+      can_state_change = true;
+    }
+    
+    // turn on conditions
     if(env_temp_f < set_temp && can_state_change && !state_dp_relay){
       digitalWrite(dp_relay, HIGH);
       state_dp_relay = HIGH;
-      millis_last_state_change = millis();
+      read_DS3231_time(&t_changed_state);
+      can_state_change = false;
+    }
 
-    // turn off conditions  
-    }else if(env_temp_f >= set_temp && can_state_change && state_dp_relay){
+    // turn off conditions
+    if(env_temp_f >= set_temp && can_state_change && state_dp_relay){
       digitalWrite(dp_relay, LOW);
       state_dp_relay = LOW;
-      millis_last_state_change = millis();
+      read_DS3231_time(&t_changed_state);
+      can_state_change = false;
     }
-    /*
-    Serial.print("1 env_temp_f: ");
-    Serial.println(env_temp_f);
-    Serial.print("Set temp: ");
-    Serial.println(set_temp);
-    Serial.print("time_delta_temp: ");
-    Serial.println(time_delta_temp);
-    Serial.print("\n");
-    */
+    
+//    Serial.print("1 env_temp_f: ");
+//    Serial.println(env_temp_f);
+//    Serial.print("Set temp: ");
+//    Serial.println(set_temp);
+//    Serial.print("time_delta_temp: ");
+//    Serial.println(time_delta_temp);
+//    Serial.print("\n");
+    
     delay(2000);
   }else{
     digitalWrite(dp_relay, LOW);
@@ -149,7 +164,8 @@ void set_start_end_time(struct ts *t_start, struct ts *t_end){
   //get the pot value
   // hour offset specifies the start of the range of values for hour.
   // 1800 for start, 0500 for end.
-  static int spread_72 = 0, start_hour_offset = 18, end_hour_offset = 5;
+  static int spread_72 = 0, start_hour_offset = START_HOUR_OFFSET;
+  static int end_hour_offset = END_HOUR_OFFSET;
   static int start_pot = 0, end_pot = 0;
 
   start_pot += (analogRead(ap_start_pot) - start_pot) / SMOOTH_FACTOR;
@@ -178,15 +194,15 @@ void set_start_end_time(struct ts *t_start, struct ts *t_end){
     t_end->min = (spread_72 % 12) * 5;
   }
 
-  /*
-  Serial.print("Start: ");
-  Serial.print(t_start->hour);
-  Serial.print(":");
-  Serial.println(t_start->min);
-  Serial.print(t_end->hour);
-  Serial.print(":");
-  Serial.println(t_end->min);
-  */
+  
+//  Serial.print("Start: ");
+//  Serial.print(t_start->hour);
+//  Serial.print(":");
+//  Serial.println(t_start->min);
+//  Serial.print(t_end->hour);
+//  Serial.print(":");
+//  Serial.println(t_end->min);
+  
 }
 
 void read_DS3231_time(struct ts *t){
@@ -197,12 +213,12 @@ void read_DS3231_time(struct ts *t){
   // request three bytes of data from DS3231 starting from register 01h
   t->min = bcdToDec(Wire.read());
   t->hour = bcdToDec(Wire.read() & 0x3f);
-  /*
+  
   Serial.print("Now: ");
   Serial.print(t->hour);
   Serial.print(":");
   Serial.println(t->min);
-  */
+  
 }
 
 byte bcdToDec(byte val){
@@ -231,5 +247,26 @@ float get_env_temp_f(boolean relay_on){
     
     temp_c = (smooth_volt * 100) - TMP36_BASE;
     return ((temp_c * 9/5) + 32);
+}
+
+void add_minutes(struct ts* t, int min_add){
+  int minute, hour;
+  minute = t->min;
+  hour = t->hour;
+  minute += min_add;
+  if(minute < 0){
+    hour -= 1;
+    minute = 60+minute;
+  }else if(minute > 59){
+    hour += 1;
+    minute = minute-60;
+  }
+  if(hour > 23){
+    hour = hour - 24;
+  }else if(hour < 0){
+    hour = 24+hour;
+  }
+  t->min = minute;
+  t->hour = hour;
 }
 
